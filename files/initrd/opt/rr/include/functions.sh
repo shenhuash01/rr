@@ -76,6 +76,13 @@ function randomhex() {
   printf "%02X" $((RANDOM % 255 + 1))
 }
 
+
+###############################################################################
+# Generate a random digit (0-9A-Z)
+function genRandomDigit() {
+  echo {0..9} | tr ' ' '\n' | sort -R | head -1
+}
+
 ###############################################################################
 # Generate a random letter
 function genRandomLetter() {
@@ -210,7 +217,7 @@ function _get_fastest() {
     done
   else
     for I in "$@"; do
-      speed=$(curl -o /dev/null -s -w '%{time_total}' "${I}")
+      speed=$(curl -skL -w '%{time_total}' "${I}" -o /dev/null)
       speed=$(awk "BEGIN {print (${speed:-0.999} * 1000)}")
       speedlist+="${I} ${speed:-999}\n" # Assign default value 999 if speed is empty
     done
@@ -362,10 +369,10 @@ function delCmdline() {
 # check CPU Intel(VT-d)/AMD(AMD-Vi)
 function checkCPU_VT_d() {
   lsmod | grep -q msr || modprobe msr 2>/dev/null
-  if grep -q "GenuineIntel" /proc/cpuinfo; then
+  if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
     local VT_D_ENABLED=$(rdmsr 0x3a 2>/dev/null)
     [ "$((${VT_D_ENABLED:-0x0} & 0x5))" -eq $((0x5)) ] && return 0
-  elif grep -q "AuthenticAMD" /proc/cpuinfo; then
+  elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
     local IOMMU_ENABLED=$(rdmsr 0xC0010114 2>/dev/null)
     [ "$((${IOMMU_ENABLED:-0x0} & 0x1))" -eq $((0x1)) ] && return 0
   else
@@ -376,11 +383,11 @@ function checkCPU_VT_d() {
 ###############################################################################
 # check BIOS Intel(VT-d)/AMD(AMD-Vi)
 function checkBIOS_VT_d() {
-  if grep -q "GenuineIntel" /proc/cpuinfo; then
-    dmesg | grep -iq "DMAR-IR.*DRHD base" && return 0
-  elif grep -q "AuthenticAMD" /proc/cpuinfo; then
+  if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+    dmesg 2>/dev/null | grep -iq "DMAR-IR.*DRHD base" && return 0
+  elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
     # TODO: need check
-    dmesg | grep -iq "AMD-Vi.*enabled" && return 0
+    dmesg 2>/dev/null | grep -iq "AMD-Vi.*enabled" && return 0
   else
     return 1
   fi
@@ -390,8 +397,8 @@ function checkBIOS_VT_d() {
 # Rebooting
 # 1 - mode
 function rebootTo() {
-  local MODES="config recovery junior bios memtest"
-  if [ -z "${1}" ] || ! echo "${MODES}" | grep -qw "${1}"; then exit 1; fi
+  local MODES="config recovery junior uefi memtest"
+  if [ -z "${1}" ] || ! echo "${MODES}" | grep -wq "${1}"; then exit 1; fi
   # echo "Rebooting to ${1} mode"
   GRUBPATH="$(dirname "$(find "${PART1_PATH}/" -name grub.cfg 2>/dev/null | head -1)")"
   [ -z "${GRUBPATH}" ] && exit 1
@@ -422,14 +429,13 @@ function connectwlanif() {
       kill -9 "$(cat /var/run/wpa_supplicant.pid.${1})"
       rm -f "/var/run/wpa_supplicant.pid.${1}"
     fi
-    wpa_supplicant -i "${1}" -c "${CONF}" -B -P "/var/run/wpa_supplicant.pid.${1}" >/dev/null 2>&1
+    wpa_supplicant -i "${1}" -c "${CONF}" -qq -B -P "/var/run/wpa_supplicant.pid.${1}" >/dev/null 2>&1
   fi
   return 0
 }
 
 ###############################################################################
 # Find and mount the DSM root filesystem
-# (based on pocopico's TCRP code)
 function findDSMRoot() {
   local DSMROOTS=""
   [ -z "${DSMROOTS}" ] && DSMROOTS="$(mdadm --detail --scan 2>/dev/null | grep -E "name=SynologyNAS:0|name=DiskStation:0|name=SynologyNVR:0|name=BeeStation:0" | awk '{print $2}' | uniq)"

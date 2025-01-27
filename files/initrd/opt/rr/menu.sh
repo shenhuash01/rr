@@ -8,6 +8,9 @@
 
 [ -z "${LOADER_DISK}" ] && die "$(TEXT "Loader is not init!")"
 
+# Disable the XON/XOFF flow control in the terminal
+# stty -ixon
+
 alias DIALOG='dialog --backtitle "$(backtitle)" --colors --aspect 50'
 
 # lock
@@ -54,6 +57,7 @@ KERNELWAY="$(readConfigKey "kernelway" "${USER_CONFIG_FILE}")"
 KERNELPANIC="$(readConfigKey "kernelpanic" "${USER_CONFIG_FILE}")"
 ODP="$(readConfigKey "odp" "${USER_CONFIG_FILE}")" # official drivers priorities
 HDDSORT="$(readConfigKey "hddsort" "${USER_CONFIG_FILE}")"
+USBASINTERNAL="$(readConfigKey "usbasinternal" "${USER_CONFIG_FILE}")"
 EMMCBOOT="$(readConfigKey "emmcboot" "${USER_CONFIG_FILE}")"
 SN="$(readConfigKey "sn" "${USER_CONFIG_FILE}")"
 MAC1="$(readConfigKey "mac1" "${USER_CONFIG_FILE}")"
@@ -122,7 +126,7 @@ function modelMenu() {
   PS="$(readConfigEntriesArray "platforms" "${WORK_PATH}/platforms.yml" | sort)"
   MJ="$(python3 ${WORK_PATH}/include/functions.py getmodels -p "${PS[*]}")"
 
-  if [ "${MJ:-[]}" = "[]" ]; then
+  if [ "${MJ:-"[]"}" = "[]" ]; then
     DIALOG --title "$(TEXT "Model")" \
       --msgbox "$(TEXT "Unable to connect to Synology website, Please check the network and try again, or use 'Parse Pat'!")" 0 0
     return 1
@@ -135,6 +139,13 @@ function modelMenu() {
     while true; do
       rm -f "${TMP_PATH}/menu"
       FLGNEX=0
+      IGPUPS=(apollolake geminilake)
+      IGPUID="$(lspci -nd ::300 2>/dev/null | grep "8086" | cut -d' ' -f3 | sed 's/://g')"
+      NVMEMS=(DS918+ RS1619xs+ DS419+ DS1019+ DS719+ DS1621xs+)
+      NVMEMD=$(find /sys/devices -type d -name nvme | awk -F'/' '{print NF}' | sort -n | tail -n1)
+      if [ -n "${IGPUID}" ]; then grep -iq "${IGPUID}" ${WORK_PATH}/i915ids && hasiGPU=1 || hasiGPU=2; else hasiGPU=0; fi
+      if [ ${NVMEMD:-0} -lt 6 ]; then hasNVME=0; elif [ ${NVMEMD:-0} -eq 6 ]; then hasNVME=1; else hasNVME=2; fi
+      [ $(lspci -d ::104 2>/dev/null | wc -l) -gt 0 -o $(lspci -d ::107 2>/dev/null | wc -l) -gt 0 ] && hasHBA=1 || hasHBA=0
       while read -r M A; do
         COMPATIBLE=1
         if [ ${RESTRICT} -eq 1 ]; then
@@ -146,12 +157,22 @@ function modelMenu() {
             fi
           done
         fi
+        unset DT G N H
         [ "$(readConfigKey "platforms.${A}.dt" "${WORK_PATH}/platforms.yml")" = "true" ] && DT="DT" || DT=""
-        [ ${COMPATIBLE} -eq 1 ] && printf "%s \"\Zb%-15s %-2s\Zn\" " "${M}" "${A}" "${DT}" >>"${TMP_PATH}/menu"
+        [ -z "${G}" ] && [ ${hasiGPU} -eq 1 ] && echo "${IGPUPS[@]}" | grep -wq "${A}" && G="G"
+        [ -z "${G}" ] && [ ${hasiGPU} -eq 2 ] && echo "epyc7002" | grep -wq "${A}" && G="G"
+        [ -z "${N}" ] && [ ${hasNVME} -ne 0 ] && [ "${DT}" = "DT" ] && N="N"
+        [ -z "${N}" ] && [ ${hasNVME} -eq 2 ] && echo "${NVMEMS[@]}" | grep -wq "${M}" && N="N"
+        [ -z "${H}" ] && [ ${hasHBA} -eq 1 ] && [ ! "${DT}" = "DT" ] && H="H"
+        [ -z "${H}" ] && [ ${hasHBA} -eq 1 ] && echo "epyc7002" | grep -wq "${A}" && H="H"
+        [ ${COMPATIBLE} -eq 1 ] && printf "%s \"\Zb%-14s  %-2s  %-3s\Zn\" " "${M}" "${A}" "${DT}" "${G}${N}${H}" >>"${TMP_PATH}/menu"
       done <"${TMP_PATH}/modellist"
       [ ${FLGNEX} -eq 1 ] && echo "f \"\Z1$(TEXT "Disable flags restriction")\Zn\"" >>"${TMP_PATH}/menu"
+      MSG="$(TEXT "Choose the model")"
+      MSG+="\n\Z1$(TEXT "DT: Disk identification method is device tree")\Zn"
+      MSG+="\n\Z1$(TEXT "G: Support iGPU; N: Support NVMe; H: Support HBA")\Zn"
       DIALOG --title "$(TEXT "Model")" \
-        --menu "$(TEXT "Choose the model")" 0 0 20 --file "${TMP_PATH}/menu" \
+        --menu "${MSG}" 0 0 20 --file "${TMP_PATH}/menu" \
         2>${TMP_PATH}/resp
       [ $? -ne 0 ] && return 0
       resp=$(cat ${TMP_PATH}/resp)
@@ -163,7 +184,7 @@ function modelMenu() {
       break
     done
   else
-    grep -qw "${1}" "${TMP_PATH}/modellist" || return 1
+    grep -wq "${1}" "${TMP_PATH}/modellist" || return 1
     resp="${1}"
   fi
 
@@ -236,7 +257,7 @@ function productversMenu() {
           --infobox "$(TEXT "Get pat data ...")" 0 0
       fi
       PJ="$(python3 ${WORK_PATH}/include/functions.py getpats4mv -m "${MODEL}" -v "${selver}")"
-      if [ "${PJ:-{}}" = "{}" ]; then
+      if [ "${PJ:-"{}"}" = "{}" ]; then
         if [ -z "${1}" ]; then
           MSG="$(TEXT "Unable to connect to Synology website, Please check the network and try again, or use 'Parse Pat'!")"
           DIALOG --title "$(TEXT "Addons")" \
@@ -318,6 +339,11 @@ function productversMenu() {
   else
     KERNEL='official'
     writeConfigKey "kernel" "${KERNEL}" "${USER_CONFIG_FILE}"
+  fi
+  # Check usbasinternal
+  if [ "true" = "$(readConfigKey "platforms.${PLATFORM}.dt" "${WORK_PATH}/platforms.yml")" ]; then
+    USBASINTERNAL='false'
+    writeConfigKey "usbasinternal" "${USBASINTERNAL}" "${USER_CONFIG_FILE}"
   fi
   # Check addons
   while IFS=': ' read -r ADDON PARAM; do
@@ -547,11 +573,15 @@ function addonMenu() {
       [ $? -ne 0 ] && continue
       ADDON="$(cat "${TMP_PATH}/resp")"
       [ -z "${ADDON}" ] && continue
-      DIALOG --title "$(TEXT "Addons")" \
-        --inputbox "$(TEXT "Type a optional params to addon")" 0 70 \
-        2>${TMP_PATH}/resp
-      [ $? -ne 0 ] && continue
-      VALUE="$(cat "${TMP_PATH}/resp")"
+      if [ "$(readAddonKey "${ADDON}" "params")" = "true" ]; then
+        DIALOG --title "$(TEXT "Addons")" \
+          --inputbox "$(TEXT "Type a optional params to addon")" 0 70 \
+          2>${TMP_PATH}/resp
+        [ $? -ne 0 ] && continue
+        VALUE="$(cat "${TMP_PATH}/resp")"
+      else
+        VALUE=""
+      fi
       ADDONS[${ADDON}]="${VALUE}"
       writeConfigKey "addons.\"${ADDON}\"" "${VALUE}" "${USER_CONFIG_FILE}"
       touch ${PART1_PATH}/.build
@@ -600,7 +630,7 @@ function addonMenu() {
         continue
       fi
       DIALOG --title "$(TEXT "Addons")" \
-        --msgbox "$(TEXT "Please upload the *.addons file.")" 0 0
+        --msgbox "$(TEXT "Please upload the *.addon file.")" 0 0
       TMP_UP_PATH=${TMP_PATH}/users
       USER_FILE=""
       rm -rf ${TMP_UP_PATH}
@@ -616,7 +646,7 @@ function addonMenu() {
         DIALOG --title "$(TEXT "Addons")" \
           --msgbox "$(TEXT "Not a valid file, please try again!")" 0 0
       else
-        if [ -d "${ADDONS_PATH}/$(basename ${USER_FILE} .addons)" ]; then
+        if [ -d "${ADDONS_PATH}/$(basename ${USER_FILE} .addon)" ]; then
           DIALOG --title "$(TEXT "Addons")" \
             --yesno "$(TEXT "The addon already exists. Do you want to overwrite it?")" 0 0
           RET=$?
@@ -2768,7 +2798,7 @@ function changePorts() {
         if [ -z "${1}" ]; then
           return 0
         else
-          if echo "${1}" | grep -qE '^[0-9]+$' && [ "${1}" -ge 0 ] && [ "${1}" -le 65535 ]; then
+          if echo "${1}" | grep -Eq '^[0-9]+$' && [ "${1}" -ge 0 ] && [ "${1}" -le 65535 ]; then
             return 0
           else
             return 1
@@ -2874,8 +2904,9 @@ function advancedMenu() {
         echo "p \"$(TEXT "Show/modify the current pat data")\""
         echo "m \"$(TEXT "Switch SATADOM mode:") \Z4${SATADOM}\Zn\""
       fi
-      if [ -n "${PLATFORM}" ] && [ "true" = "$(readConfigKey "platforms.${PLATFORM}.dt" "${WORK_PATH}/platforms.yml")" ]; then
+      if [ -n "${PLATFORM}" ]; then
         echo "d \"$(TEXT "Custom DTS")\""
+        echo "u \"$(TEXT "USB disk as internal disk:") \Z4${USBASINTERNAL}\Zn\""
       fi
       echo "w \"$(TEXT "Timeout of boot wait:") \Z4${BOOTWAIT}\Zn\""
       if [ "${DIRECTBOOT}" = "false" ]; then
@@ -2963,8 +2994,24 @@ function advancedMenu() {
       NEXT="m"
       ;;
     d)
-      customDTS
+      if [ "true" = "$(readConfigKey "platforms.${PLATFORM}.dt" "${WORK_PATH}/platforms.yml")" ]; then
+        customDTS
+      else
+        DIALOG --title "$(TEXT "Advanced")" \
+          --msgbox "$(TEXT "Custom DTS is not supported for current model.")" 0 0
+      fi
       NEXT="e"
+      ;;
+    u)
+      if [ "true" = "$(readConfigKey "platforms.${PLATFORM}.dt" "${WORK_PATH}/platforms.yml")" ]; then
+        DIALOG --title "$(TEXT "Advanced")" \
+          --msgbox "$(TEXT "USB disk as internal disk is not supported for current model.")" 0 0
+        NEXT="e"
+      else
+        USBASINTERNAL=$([ "${USBASINTERNAL}" = "true" ] && echo 'false' || echo 'true')
+        writeConfigKey "usbasinternal" "${USBASINTERNAL}" "${USER_CONFIG_FILE}"
+        NEXT="u"
+      fi
       ;;
     w)
       ITEMS="$(echo -e "1 \n5 \n10 \n30 \n60 \n")"
@@ -3261,7 +3308,7 @@ function downloadExts() {
   TAG=""
   if [ "${PRERELEASE}" = "true" ]; then
     # TAG="$(curl -skL --connect-timeout 10 "${PROXY}${3}/tags" | pup 'a[class="Link--muted"] attr{href}' | grep ".zip" | head -1)"
-    TAG="$(curl -skL --connect-timeout 10 "${PROXY}${3}/tags" | grep /refs/tags/.*\.zip | sed -E 's/.*\/refs\/tags\/(.*)\.zip.*$/\1/' | sort -rV | head -1)"
+    TAG="$(curl -skL --connect-timeout 10 "${PROXY}${3}/tags" | grep "/refs/tags/.*\.zip" | sed -E 's/.*\/refs\/tags\/(.*)\.zip.*$/\1/' | sort -rV | head -1)"
   else
     LATESTURL="$(curl -skL --connect-timeout 10 -w %{url_effective} -o /dev/null "${PROXY}${3}/releases/latest")"
     TAG="${LATESTURL##*/}"
@@ -4078,9 +4125,9 @@ else
           echo "x \"$(TEXT "Reboot to RR")\""
           echo "y \"$(TEXT "Reboot to Recovery")\""
           echo "z \"$(TEXT "Reboot to Junior")\""
-          #if efibootmgr | grep -q "^Boot0000"; then
-          echo "b \"$(TEXT "Reboot to BIOS")\""
-          #fi
+          if [ -d "/sys/firmware/efi" ]; then
+            echo "b \"$(TEXT "Reboot to UEFI")\""
+          fi
           echo "s \"$(TEXT "Back to shell")\""
           echo "e \"$(TEXT "Exit")\""
         } >"${TMP_PATH}/menu"
@@ -4121,10 +4168,8 @@ else
           ;;
         b)
           DIALOG --title "$(TEXT "Main menu")" \
-            --infobox "$(TEXT "Reboot to BIOS")" 0 0
-          #efibootmgr -n 0000 >/dev/null 2>&1
-          #reboot
-          rebootTo bios
+            --infobox "$(TEXT "Reboot to UEFI")" 0 0
+          rebootTo uefi
           exit 0
           ;;
         s)
