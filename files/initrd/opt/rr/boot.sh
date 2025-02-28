@@ -33,6 +33,26 @@ BTITLE+="$([ ${EFI} -eq 1 ] && echo " [UEFI]" || echo " [BIOS]")"
 BTITLE+="$([ "${BUS}" = "usb" ] && echo " [${BUS^^} flashdisk]" || echo " [${BUS^^} DoM]")"
 printf "\033[1;33m%*s\033[0m\n" $(((${#BTITLE} + ${COLUMNS}) / 2)) "${BTITLE}"
 
+if [ -f ${PART1_PATH}/.upgraded ]; then
+  MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
+  if [ -n "${MODEL}" ]; then
+    printf "\033[1;43m%s\033[0m\n" "$(TEXT "Reconfigure after upgrade ...")"
+    PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
+    PATURL="$(readConfigKey "paturl" "${USER_CONFIG_FILE}")"
+    PATSUM="$(readConfigKey "patsum" "${USER_CONFIG_FILE}")"
+    ./menu.sh modelMenu "${MODEL}" || {
+      echo -e "$(TEXT "Reconfiguration failed!")"
+      exit 1
+    }
+    if [ -n "${PRODUCTVER}" ] && [ -n "${PATURL}" ]; then
+      ./menu.sh productversMenu "${PRODUCTVER}" "${PATURL}" "${PATSUM}" || {
+        echo -e "$(TEXT "Reconfiguration failed!")"
+        exit 1
+      }
+    fi
+  fi
+  rm -f ${PART1_PATH}/.upgraded
+fi
 # Check if DSM zImage changed, patch it if necessary
 ZIMAGE_HASH="$(readConfigKey "zimage-hash" "${USER_CONFIG_FILE}")"
 if [ -f ${PART1_PATH}/.build ] || [ "$(sha256sum "${ORI_ZIMAGE_FILE}" | awk '{print $1}')" != "${ZIMAGE_HASH}" ]; then
@@ -61,12 +81,11 @@ MODELID="$(readConfigKey "modelid" "${USER_CONFIG_FILE}")"
 PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
 BUILDNUM="$(readConfigKey "buildnum" "${USER_CONFIG_FILE}")"
 SMALLNUM="$(readConfigKey "smallnum" "${USER_CONFIG_FILE}")"
+DT="$(readConfigKey "dt" "${USER_CONFIG_FILE}")"
+KVER="$(readConfigKey "kver" "${USER_CONFIG_FILE}")"
+KPRE="$(readConfigKey "kpre" "${USER_CONFIG_FILE}")"
 KERNEL="$(readConfigKey "kernel" "${USER_CONFIG_FILE}")"
 LKM="$(readConfigKey "lkm" "${USER_CONFIG_FILE}")"
-
-DT="$(readConfigKey "platforms.${PLATFORM}.dt" "${WORK_PATH}/platforms.yml")"
-KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.\"${PRODUCTVER}\".kver" "${WORK_PATH}/platforms.yml")"
-KPRE="$(readConfigKey "platforms.${PLATFORM}.productvers.\"${PRODUCTVER}\".kpre" "${WORK_PATH}/platforms.yml")"
 
 MEV="$(virt-what 2>/dev/null | head -1)"
 DMI="$(dmesg 2>/dev/null | grep -i "DMI:" | head -1 | sed 's/\[.*\] DMI: //i')"
@@ -86,7 +105,7 @@ if ! readConfigMap "addons" "${USER_CONFIG_FILE}" | grep -q nvmesystem; then
   HASATA=0
   for D in $(lsblk -dpno NAME); do
     [ "${D}" = "${LOADER_DISK}" ] && continue
-    if echo "sata sas scsi" | grep -qw "$(getBus "${D}")"; then
+    if echo "sata sas scsi" | grep -wq "$(getBus "${D}")"; then
       HASATA=1
       break
     fi
@@ -104,6 +123,7 @@ SN="$(readConfigKey "sn" "${USER_CONFIG_FILE}")"
 MAC1="$(readConfigKey "mac1" "${USER_CONFIG_FILE}")"
 MAC2="$(readConfigKey "mac2" "${USER_CONFIG_FILE}")"
 KERNELPANIC="$(readConfigKey "kernelpanic" "${USER_CONFIG_FILE}")"
+USBASINTERNAL="$(readConfigKey "usbasinternal" "${USER_CONFIG_FILE}")"
 EMMCBOOT="$(readConfigKey "emmcboot" "${USER_CONFIG_FILE}")"
 MODBLACKLIST="$(readConfigKey "modblacklist" "${USER_CONFIG_FILE}")"
 
@@ -122,6 +142,7 @@ CMDLINE['netif_num']="0"
 } # Sanity check
 [ -n "${MAC1}" ] && CMDLINE['mac1']="${MAC1}" && CMDLINE['netif_num']="1"
 [ -n "${MAC2}" ] && CMDLINE['mac2']="${MAC2}" && CMDLINE['netif_num']="2"
+CMDLINE['skip_vender_mac_interfaces']="$(seq -s, 0 $((${CMDLINE['netif_num']:-1} - 1)))"
 
 # set fixed cmdline
 if grep -q "force_junior" /proc/cmdline; then
@@ -162,7 +183,6 @@ fi
 
 CMDLINE["HddHotplug"]="1"
 CMDLINE["vender_format_version"]="2"
-CMDLINE['skip_vender_mac_interfaces']="0,1,2,3,4,5,6,7"
 CMDLINE['earlyprintk']=""
 CMDLINE['earlycon']="uart8250,io,0x3f8,115200n8"
 CMDLINE['console']="ttyS0,115200n8"
@@ -173,14 +193,22 @@ CMDLINE['loglevel']="15"
 CMDLINE['log_buf_len']="32M"
 CMDLINE['rootwait']=""
 CMDLINE['panic']="${KERNELPANIC:-0}"
-# CMDLINE['nointremap']="" # no need
+# CMDLINE['intremap']="off" # no need
+# CMDLINE['amd_iommu_intr']="legacy" # no need
 # CMDLINE['split_lock_detect']="off" # check KVER
 CMDLINE['pcie_aspm']="off"
 # CMDLINE['intel_pstate']="disable"
+# CMDLINE['amd_pstate']="disable"
 # CMDLINE['nox2apic']=""  # check platform
 # CMDLINE['nomodeset']=""
+CMDLINE['nowatchdog']=""
+
 CMDLINE['modprobe.blacklist']="${MODBLACKLIST}"
 CMDLINE['mev']="${MEV:-physical}"
+
+if [ "${USBASINTERNAL}" = "true" ]; then
+  CMDLINE['usbasinternal']=""
+fi
 
 if echo "apollolake geminilake purley" | grep -wq "${PLATFORM}"; then
   CMDLINE["nox2apic"]=""
@@ -188,7 +216,7 @@ fi
 
 # # Save command line to grubenv  RR_CMDLINE= ... nox2apic
 # if echo "apollolake geminilake purley" | grep -wq "${PLATFORM}"; then
-#   if grep -q "^flags.*x2apic.*" /proc/cpuinfo; then
+#   if grep -Eq "^flags.*x2apic.*" /proc/cpuinfo; then
 #     checkCmdline "rr_cmdline" "nox2apic" || addCmdline "rr_cmdline" "nox2apic"
 #   fi
 # else
@@ -221,6 +249,14 @@ if echo "purley broadwellnkv2" | grep -wq "${PLATFORM}"; then
   CMDLINE["SASmodel"]="1"
 fi
 
+SSID="$(cat ${PART1_PATH}/wpa_supplicant.conf 2>/dev/null | grep 'ssid=' | cut -d'=' -f2 | sed 's/^"//; s/"$//' | xxd -p | tr -d '\n')"
+PSK="$(cat ${PART1_PATH}/wpa_supplicant.conf 2>/dev/null | grep 'psk=' | cut -d'=' -f2 | sed 's/^"//; s/"$//' | xxd -p | tr -d '\n')"
+
+if [ -n "${SSID}" ] && [ -n "${PSK}" ]; then
+  CMDLINE["wpa.ssid"]="${SSID}"
+  CMDLINE["wpa.psk"]="${PSK}"
+fi
+
 while IFS=': ' read -r KEY VALUE; do
   [ -n "${KEY}" ] && CMDLINE["network.${KEY}"]="${VALUE}"
 done <<<$(readConfigMap "network" "${USER_CONFIG_FILE}")
@@ -245,17 +281,24 @@ function _bootwait() {
   [ -z "${BOOTWAIT}" ] && BOOTWAIT=10
   busybox w 2>/dev/null | awk '{print $1" "$2" "$4" "$5" "$6}' >WB
   MSG=""
-  while [ ${BOOTWAIT} -ge 0 ]; do
+  while [ ${BOOTWAIT} -gt 0 ]; do
+    sleep 1
+    BOOTWAIT=$((BOOTWAIT - 1))
     MSG="$(printf "\033[1;33m$(TEXT "%2ds (Changing access(ssh/web) status will interrupt boot)")\033[0m" "${BOOTWAIT}")"
     printf "\r${MSG}"
     busybox w 2>/dev/null | awk '{print $1" "$2" "$4" "$5" "$6}' >WC
     if ! diff WB WC >/dev/null 2>&1; then
-      printf "\r\033[1;33m%s\033[0m\n" "$(TEXT "access(ssh/web) status has changed and booting is interrupted.")"
+      printf "\r%$((${#MSG} * 2))s\n" " "
+      printf "\r\033[1;33m%s\033[0m\n" "$(TEXT "Access(ssh/web) status has changed and booting is interrupted.")"
       rm -f WB WC
       return 1
     fi
-    sleep 1
-    BOOTWAIT=$((BOOTWAIT - 1))
+    if false && [ -f "${TMP_PATH}/menu.lock" ]; then
+      printf "\r%$((${#MSG} * 2))s\n" " "
+      printf "\r\033[1;33m%s\033[0m\n" "$(TEXT "Menu opened and booting is interrupted.")"
+      rm -f WB WC
+      return 1
+    fi
   done
   rm -f WB WC
   printf "\r%$((${#MSG} * 2))s\n" " "
@@ -264,16 +307,18 @@ function _bootwait() {
 
 DIRECT="$(readConfigKey "directboot" "${USER_CONFIG_FILE}")"
 if [ "${DIRECT}" = "true" ] || [ "${MEV:-physical}" = "parallels" ]; then
-  grub-editenv ${USER_GRUBENVFILE} set rr_version="${WTITLE}"
-  grub-editenv ${USER_GRUBENVFILE} set rr_booting="${BTITLE}"
-  grub-editenv ${USER_GRUBENVFILE} set dsm_model="${MODEL}(${PLATFORM})"
-  grub-editenv ${USER_GRUBENVFILE} set dsm_version="${PRODUCTVER}(${BUILDNUM}$([ ${SMALLNUM:-0} -ne 0 ] && echo "u${SMALLNUM}"))"
-  grub-editenv ${USER_GRUBENVFILE} set dsm_kernel="${KERNEL}"
-  grub-editenv ${USER_GRUBENVFILE} set dsm_lkm="${LKM}"
-  grub-editenv ${USER_GRUBENVFILE} set sys_mev="${MEV:-physical}"
-  grub-editenv ${USER_GRUBENVFILE} set sys_dmi="${DMI}"
-  grub-editenv ${USER_GRUBENVFILE} set sys_cpu="${CPU}"
-  grub-editenv ${USER_GRUBENVFILE} set sys_mem="${MEM}"
+  # grubenv file limit is 1024 bytes.
+  grub-editenv ${USER_RSYSENVFILE} create
+  grub-editenv ${USER_RSYSENVFILE} set rr_version="${WTITLE}"
+  grub-editenv ${USER_RSYSENVFILE} set rr_booting="${BTITLE}"
+  grub-editenv ${USER_RSYSENVFILE} set dsm_model="${MODEL}(${PLATFORM})"
+  grub-editenv ${USER_RSYSENVFILE} set dsm_version="${PRODUCTVER}(${BUILDNUM}$([ ${SMALLNUM:-0} -ne 0 ] && echo "u${SMALLNUM}"))"
+  grub-editenv ${USER_RSYSENVFILE} set dsm_kernel="${KERNEL}"
+  grub-editenv ${USER_RSYSENVFILE} set dsm_lkm="${LKM}"
+  grub-editenv ${USER_RSYSENVFILE} set sys_mev="${MEV:-physical}"
+  grub-editenv ${USER_RSYSENVFILE} set sys_dmi="${DMI}"
+  grub-editenv ${USER_RSYSENVFILE} set sys_cpu="${CPU}"
+  grub-editenv ${USER_RSYSENVFILE} set sys_mem="${MEM}"
 
   CMDLINE_DIRECT=$(echo ${CMDLINE_LINE} | sed 's/>/\\\\>/g') # Escape special chars
   grub-editenv ${USER_GRUBENVFILE} set dsm_cmdline="${CMDLINE_DIRECT}"
@@ -285,16 +330,7 @@ if [ "${DIRECT}" = "true" ] || [ "${MEV:-physical}" = "parallels" ]; then
   reboot
   exit 0
 else
-  grub-editenv ${USER_GRUBENVFILE} unset rr_version
-  grub-editenv ${USER_GRUBENVFILE} unset rr_booting
-  grub-editenv ${USER_GRUBENVFILE} unset dsm_model
-  grub-editenv ${USER_GRUBENVFILE} unset dsm_version
-  grub-editenv ${USER_GRUBENVFILE} unset dsm_kernel
-  grub-editenv ${USER_GRUBENVFILE} unset dsm_lkm
-  grub-editenv ${USER_GRUBENVFILE} unset sys_mev
-  grub-editenv ${USER_GRUBENVFILE} unset sys_dmi
-  grub-editenv ${USER_GRUBENVFILE} unset sys_cpu
-  grub-editenv ${USER_GRUBENVFILE} unset sys_mem
+  rm -f ${USER_RSYSENVFILE} 2>/dev/null || true
   grub-editenv ${USER_GRUBENVFILE} unset dsm_cmdline
   grub-editenv ${USER_GRUBENVFILE} unset next_entry
   ETHX=$(ls /sys/class/net/ 2>/dev/null | grep -v lo) || true
@@ -325,27 +361,32 @@ else
   for N in ${ETHX}; do
     COUNT=0
     DRIVER=$(ls -ld /sys/class/net/${N}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
-    printf "%s(%s): " "${N}" "${DRIVER}"
+    MAC=$(cat /sys/class/net/${N}/address 2>/dev/null)
+    printf "%s(%s): " "${N}" "${MAC}@${DRIVER}"
     while true; do
+      if false && [ ! "${N::3}" = "eth" ]; then
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "IGNORE (Does not support non-wired network card.)")"
+        break
+      fi
       if [ -z "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
-        printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "DOWN")"
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "DOWN")"
         break
       fi
       if [ "0" = "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
-        printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "NOT CONNECTED")"
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "NOT CONNECTED")"
         break
       fi
       if [ ${COUNT} -eq ${BOOTIPWAIT} ]; then # Under normal circumstances, no errors should occur here.
-        printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "TIMEOUT (Please check the IP on the router.)")"
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "TIMEOUT (Please check the IP on the router.)")"
         break
       fi
       COUNT=$((COUNT + 1))
       IP="$(getIP "${N}")"
       if [ -n "${IP}" ]; then
         if echo "${IP}" | grep -q "^169\.254\."; then
-          printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "LINK LOCAL (No DHCP server detected.)")"
+          printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "LINK LOCAL (No DHCP server detected.)")"
         else
-          printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(printf "$(TEXT "Access \033[1;34mhttp://%s:5000\033[0m to connect the DSM via web.")" "${IP}")"
+          printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(printf "$(TEXT "Access \033[1;34mhttp://%s:5000\033[0m to connect the DSM via web.")" "${IP}")"
         fi
         break
       fi
@@ -386,7 +427,9 @@ else
     fi
   done
 
-  # # Unload all network interfaces
+  # Disconnect wireless
+  lsmod | grep -q iwlwifi && for N in $(ls /sys/class/net/ 2>/dev/null | grep wlan); do connectwlanif "${N}" 0 2>/dev/null; done
+  # Unload all network drivers
   # for D in $(realpath /sys/class/net/*/device/driver); do rmmod -f "$(basename ${D})" 2>/dev/null || true; done
 
   # Unload all graphics drivers

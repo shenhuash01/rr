@@ -44,6 +44,7 @@ initConfigKey "kernelway" "power" "${USER_CONFIG_FILE}"
 initConfigKey "kernelpanic" "5" "${USER_CONFIG_FILE}"
 initConfigKey "odp" "false" "${USER_CONFIG_FILE}"
 initConfigKey "hddsort" "false" "${USER_CONFIG_FILE}"
+initConfigKey "usbasinternal" "false" "${USER_CONFIG_FILE}"
 initConfigKey "emmcboot" "false" "${USER_CONFIG_FILE}"
 initConfigKey "platform" "" "${USER_CONFIG_FILE}"
 initConfigKey "model" "" "${USER_CONFIG_FILE}"
@@ -51,6 +52,9 @@ initConfigKey "modelid" "" "${USER_CONFIG_FILE}"
 initConfigKey "productver" "" "${USER_CONFIG_FILE}"
 initConfigKey "buildnum" "" "${USER_CONFIG_FILE}"
 initConfigKey "smallnum" "" "${USER_CONFIG_FILE}"
+initConfigKey "dt" "" "${USER_CONFIG_FILE}"
+initConfigKey "kver" "" "${USER_CONFIG_FILE}"
+initConfigKey "kpre" "" "${USER_CONFIG_FILE}"
 initConfigKey "paturl" "" "${USER_CONFIG_FILE}"
 initConfigKey "patsum" "" "${USER_CONFIG_FILE}"
 initConfigKey "sn" "" "${USER_CONFIG_FILE}"
@@ -66,24 +70,13 @@ initConfigKey "addons" "{}" "${USER_CONFIG_FILE}"
 if [ -z "$(readConfigMap "addons" "${USER_CONFIG_FILE}")" ]; then
   initConfigKey "addons.acpid" "" "${USER_CONFIG_FILE}"
   initConfigKey "addons.trivial" "" "${USER_CONFIG_FILE}"
+  initConfigKey "addons.vmtools" "" "${USER_CONFIG_FILE}"
   initConfigKey "addons.mountloader" "" "${USER_CONFIG_FILE}"
   initConfigKey "addons.powersched" "" "${USER_CONFIG_FILE}"
   initConfigKey "addons.reboottoloader" "" "${USER_CONFIG_FILE}"
 fi
 initConfigKey "modules" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "modblacklist" "evbug,cdc_ether" "${USER_CONFIG_FILE}"
-
-# for update
-if [ -f "${PART2_PATH}/GRUB_VER" ]; then
-  PLATFORMTMP="$(_get_conf_kv "PLATFORM" "${PART2_PATH}/GRUB_VER")"
-  MODELTMP="$(_get_conf_kv "MODEL" "${PART2_PATH}/GRUB_VER")"
-  [ -z "$(readConfigKey "platform" "${USER_CONFIG_FILE}")" ] &&
-    writeConfigKey "platform" "${PLATFORMTMP,,}" "${USER_CONFIG_FILE}"
-  [ -z "$(readConfigKey "model" "${USER_CONFIG_FILE}")" ] &&
-    writeConfigKey "model" "$(echo "${MODELTMP}" | sed 's/d$/D/; s/rp$/RP/; s/rp+/RP+/')" "${USER_CONFIG_FILE}"
-  [ -z "$(readConfigKey "modelid" "${USER_CONFIG_FILE}")" ] &&
-    writeConfigKey "modelid" "${MODELTMP}" "${USER_CONFIG_FILE}"
-fi
 
 if [ ! "LOCALBUILD" = "${LOADER_DISK}" ]; then
   if arrayExistItem "sortnetif:" "$(readConfigMap "addons" "${USER_CONFIG_FILE}")"; then
@@ -119,8 +112,8 @@ BUS=$(getBus "${LOADER_DISK}")
 
 BUSLIST="usb sata sas scsi nvme mmc ide virtio vmbus xen"
 if [ "${BUS}" = "usb" ]; then
-  VID="0x$(udevadm info --query property --name "${LOADER_DISK}" 2>/dev/null | grep ID_VENDOR_ID | cut -d= -f2)"
-  PID="0x$(udevadm info --query property --name "${LOADER_DISK}" 2>/dev/null | grep ID_MODEL_ID | cut -d= -f2)"
+  VID="0x$(udevadm info --query property --name "${LOADER_DISK}" 2>/dev/null | grep "ID_VENDOR_ID" | cut -d= -f2)"
+  PID="0x$(udevadm info --query property --name "${LOADER_DISK}" 2>/dev/null | grep "ID_MODEL_ID" | cut -d= -f2)"
   TYPE="flashdisk"
 elif ! echo "${BUSLIST}" | grep -wq "${BUS}"; then
   if [ "LOCALBUILD" = "${LOADER_DISK}" ]; then
@@ -193,27 +186,28 @@ printf "$(TEXT "Waiting IP.\n")"
 for N in ${ETHX}; do
   COUNT=0
   DRIVER=$(ls -ld /sys/class/net/${N}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
-  printf "%s(%s): " "${N}" "${DRIVER}"
+  MAC=$(cat /sys/class/net/${N}/address 2>/dev/null)
+  printf "%s(%s): " "${N}" "${MAC}@${DRIVER}"
   while true; do
     if [ -z "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
-      printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "DOWN")"
+      printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "DOWN")"
       break
     fi
     if [ "0" = "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
-      printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "NOT CONNECTED")"
+      printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "NOT CONNECTED")"
       break
     fi
     if [ ${COUNT} -eq 15 ]; then # Under normal circumstances, no errors should occur here.
-      printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "TIMEOUT (Please check the IP on the router.)")"
+      printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "TIMEOUT (Please check the IP on the router.)")"
       break
     fi
     COUNT=$((COUNT + 1))
     IP="$(getIP "${N}")"
     if [ -n "${IP}" ]; then
       if echo "${IP}" | grep -q "^169\.254\."; then
-        printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(TEXT "LINK LOCAL (No DHCP server detected.)")"
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(TEXT "LINK LOCAL (No DHCP server detected.)")"
       else
-        printf "\r%s(%s): %s\n" "${N}" "${DRIVER}" "$(printf "$(TEXT "Access \033[1;34mhttp://%s:%d\033[0m to configure the loader via web terminal.")" "${IP}" "${TTYD:-7681}")"
+        printf "\r%s(%s): %s\n" "${N}" "${MAC}@${DRIVER}" "$(printf "$(TEXT "Access \033[1;34mhttp://%s:%d\033[0m to configure the loader via web terminal.")" "${IP}" "${TTYD:-7681}")"
       fi
       break
     fi
