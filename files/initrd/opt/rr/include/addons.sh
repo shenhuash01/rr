@@ -1,3 +1,13 @@
+#!/usr/bin/env bash
+#
+# Copyright (C) 2022 Ing <https://github.com/wjz304>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+
+# shellcheck disable=SC2115,SC2155
+
 ###############################################################################
 # Return list of available addons
 # 1 - Platform
@@ -19,7 +29,23 @@ function availableAddons() {
     [ -z "${DESC}" ] && DESC="$(readConfigKey "description.en_US" "${D}/manifest.yml")"
     [ -z "${DESC}" ] && DESC="$(readConfigKey "description" "${D}/manifest.yml")"
     echo -e "${ADDON}\t${DESC:-"unknown"}"
-  done <<<$(find "${ADDONS_PATH}" -maxdepth 1 -type d 2>/dev/null | sort)
+  done <<<"$(find "${ADDONS_PATH}" -maxdepth 1 -type d 2>/dev/null | sort)"
+}
+
+###############################################################################
+# Read Addon Key
+# 1 - Addon
+# 2 - key
+function readAddonKey() {
+  if [ -z "${1}" ] || [ -z "${2}" ]; then
+    echo ""
+    return 1
+  fi
+  if [ ! -f "${ADDONS_PATH}/${1}/manifest.yml" ]; then
+    echo ""
+    return 1
+  fi
+  readConfigKey "${2}" "${ADDONS_PATH}/${1}/manifest.yml"
 }
 
 ###############################################################################
