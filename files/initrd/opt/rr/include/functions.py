@@ -9,7 +9,7 @@
 #
 # # Backup the original python3 executable.
 # sudo mv -f "$(realpath $(which python3))/EXTERNALLY-MANAGED" "$(realpath $(which python3))/EXTERNALLY-MANAGED.bak" 2>/dev/null || true
-# sudo pip3 install -U click requests requests-toolbelt urllib3 qrcode[pil] beautifulsoup4
+# sudo pip3 install -U click requests requests-toolbelt qrcode[pil] beautifulsoup4
 
 import os, click
 
@@ -113,7 +113,7 @@ def getmodels(platforms=None):
     """
     Get Syno Models.
     """
-    import json, requests, urllib3
+    import re, json, requests, urllib3
     from requests.adapters import HTTPAdapter
     from requests.packages.urllib3.util.retry import Retry  # type: ignore
 
@@ -127,25 +127,28 @@ def getmodels(platforms=None):
 
     models = []
     try:
-        req = session.get("https://autoupdate.synology.com/os/v2", timeout=10, verify=False)
-        req.encoding = "utf-8"
-        data = json.loads(req.text)
+        url = "http://update7.synology.com/autoupdate/genRSS.php?include_beta=1"
+        #url = "https://update7.synology.com/autoupdate/genRSS.php?include_beta=1"
 
-        for item in data["channel"]["item"]:
-            if not item["title"].startswith("DSM"):
+        req = session.get(url, timeout=10, verify=False)
+        req.encoding = "utf-8"
+        p = re.compile(r"<mUnique>(.*?)</mUnique>.*?<mLink>(.*?)</mLink>", re.MULTILINE | re.DOTALL)
+        data = p.findall(req.text)
+        for item in data:
+            if not "DSM" in item[1]:
                 continue
-            for model in item["model"]:
-                arch = model["mUnique"].split("_")[1]
-                name = model["mLink"].split("/")[-1].split("_")[1].replace("%2B", "+")
-                if PS and arch.lower() not in PS:
-                    continue
-                if not any(m["name"] == name for m in models):
-                    models.append({"name": name, "arch": arch})
+            arch = item[0].split("_")[1]
+            name = item[1].split("/")[-1].split("_")[1].replace("%2B", "+")
+            if PS and arch.lower() not in PS:
+                continue
+            if not any(m["name"] == name for m in models):
+                models.append({"name": name, "arch": arch})
 
         models.sort(key=lambda k: (k["arch"], k["name"]))
 
     except Exception as e:
-        click.echo(f"Error: {e}")
+        # click.echo(f"Error: {e}")
+        pass
 
     print(json.dumps(models, indent=4))
 
@@ -190,7 +193,8 @@ def getmodelsbykb(platforms=None):
                 continue
             models.append({"name": d[0].split("<br")[0], "arch": d[5].lower()})
     except Exception as e:
-        click.echo(f"Error: {e}")
+        # click.echo(f"Error: {e}")
+        pass
 
     models.sort(key=lambda x: (x["arch"], x["name"]))
     print(json.dumps(models, indent=4))
@@ -267,12 +271,16 @@ def getpats4mv(model, version):
                         continue
                     V = __fullversion(f"{S['build_ver']}-{S['build_num']}-{S['nano']}")
                     if V not in pats:
+                        reqPat = session.head(S['files'][0]['url'].split('?')[0], timeout=10, verify=False)
+                        if reqPat.status_code == 403:
+                            continue
                         pats[V] = {
                             'url': S['files'][0]['url'].split('?')[0],
                             'sum': S['files'][0]['checksum']
                         }
     except Exception as e:
-        click.echo(f"Error: {e}")
+        # click.echo(f"Error: {e}")
+        pass
 
     pats = {k: pats[k] for k in sorted(pats.keys(), reverse=True)}
     print(json.dumps(pats, indent=4))
@@ -321,7 +329,8 @@ def getpats(models=None):
                         pats[model] = {}
                     pats[model][__fullversion(ver)] = item.attrs['href']
     except Exception as e:
-        click.echo(f"Error: {e}")
+        # click.echo(f"Error: {e}")
+        pass
 
     print(json.dumps(pats, indent=4))
 
